@@ -10,45 +10,93 @@ trait QueryTrait
     use ConnectionTrait;
 
     static protected string|null $tableName = null;
-
-    static protected string $query = "";
+    static protected string|null $query = '';
 
     public static function all()
     {
-        $query = "SELECT * FROM " . static::$tableName;
-        return static::connect()->query($query)->fetchAll(PDO::FETCH_CLASS, static::class);
+        $query = 'SELECT * FROM ' . static::$tableName;
+
+        return static::connect()->query($query) ->fetchAll(PDO::FETCH_CLASS, static::class);
     }
 
     public static function find(int $id)
     {
-        $query = "SELECT * FROM " . static::$tableName . " WHERE id = :id";
+        $query = 'SELECT * FROM ' . static::$tableName . ' WHERE id = :id';
 
-        $query = static::connect()->prepare($query);
-        $query->bindValue(':id', $id, PDO::PARAM_INT);
-        $query->execute();
+        $stmt = static::connect()->prepare($query);
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+        $stmt->execute();
 
-        return $query->fetchObject(static::class);
+        return $stmt->fetchObject(static::class);
     }
 
-
     /**
-     * Return only one raw
+     * Return only one row
+     *
      * @param string $column
-     * @param $value
-     * @return mixed
+     * @param        $value
+     *
+     * @return false|mixed|object|\stdClass|null
      */
     public static function findBy(string $column, $value)
     {
         $query = "SELECT * FROM " . static::$tableName . " WHERE {$column} = :{$column}";
 
-        $query = static::connect()->prepare($query);
-        $query->bindValue(":{$column}", $value);
-        $query->execute();
+        $stmt = static::connect()->prepare($query);
+        $stmt->bindValue(":{$column}", $value);
+        $stmt->execute();
 
-        return $query->fetchObject(static::class);
+        return $stmt->fetchObject(static::class);
     }
 
-    public static function select(array $columns = ['*']): Model
+    public static function create(array $fields)
+    {
+        $vars = static::prepareQueryVars($fields);
+
+        $query = 'INSERT INTO ' . static::$tableName . '(' . $vars['keys'] . ') VALUES (' . $vars['placeholders'] . ')';
+
+        $stmt = static::connect()->prepare($query);
+
+        foreach ($fields as $key => $value) {
+            $stmt->bindValue(":{$key}", $value);
+        }
+
+        $stmt->execute();
+
+        return (int)static::connect()->lastInsertId();
+    }
+
+    public function update($fields)
+    {
+        if (!isset($this->id)) {
+            return $this;
+        }
+
+        $query = "UPDATE " . static::$tableName . ' SET ' . static::buildPlaceholders($fields) . " WHERE id=:id";
+
+        $stmt = static::connect()->prepare($query);
+
+        foreach ($fields as $key => $value) {
+            $stmt->bindValue(":{$key}", $value);
+        }
+
+        $stmt->bindValue('id', $this->id, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return static::find($this->id);
+    }
+
+    public static function delete($id)
+    {
+        $query = 'DELETE FROM ' . static::$tableName . ' WHERE id = :id';
+
+        $stmt = static::connect()->prepare($query);
+        $stmt->bindValue(':id', $id, PDO::PARAM_INT);
+
+        return $stmt->execute();
+    }
+
+    public static function select(array $columns = ['*'])
     {
         static::$query = "";
         static::$query = "SELECT " . implode(',', $columns) . " FROM " . static::$tableName . " ";
@@ -56,24 +104,18 @@ trait QueryTrait
         return new static();
     }
 
-    public static function create(array $fields)
+    public function destroy()
     {
-        $vars = static::preparedQueryVars($fields);
-
-        $query = 'INSERT INTO ' . static::$tableName . ' ('. $vars['keys'] .') VALUES (' . $vars['placeholders'] . ')';
-        $query = static::connect()->prepare($query);
-
-        foreach ($fields as $key => $value) {
-            $query->bindValue(":{$key}", $value);
+        if (!isset($this->id)) {
+            return $this;
         }
 
-        $query->execute();
-
-        return (int)static::connect()->lastInsertId();
+        return static::delete($this->id);
     }
 
     /**
      * $conditions = ['column', '<', 'value']
+     *
      * @param array $conditions
      */
     public function where(array $conditions)
@@ -82,59 +124,34 @@ trait QueryTrait
         $value = $conditions[$valueKey];
         unset($conditions[$valueKey]);
 
-        static::$query .= 'WHERE ' . implode($conditions) . ' :value';
+        static::$query .= ' WHERE ' . implode($conditions) . ' :value';
 
         $stmt = static::connect()->prepare(static::$query);
         $stmt->bindValue(':value', $value);
-
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_CLASS, static::class);
     }
 
-    /**
-     * @param array fields
-     * @param int id
-     */
-    public static function update($fields, $id)
-    {
-        $params = [];
-        $query = "UPDATE " . static::$tableName . " SET ";
-        foreach ($fields as $key => $value){
-            $params[] = "{$value} = :{$value}";
-        }
-        $query.= implode(',' , $params);
-        $query .= " WHERE id=:id";
-
-        $stmt = static::connect()->prepare($query);
-        foreach ($fields as $key => $value) {
-            $stmt->bindValue(":{$key}", $value);
-        }
-
-        $stmt->bindValue('id', $id, PDO::PARAM_INT);
-
-        $stmt->execute();
-        return static::find($id);
-    }
-
-    public static function delete(int $id) : bool
-    {
-        $query = 'DELETE FROM ' . static::$tableName . ' WHERE id = :id';
-        $query = static::connect()->prepare($query);
-        $query->bindValue(':id', $id);
-        $query->execute();
-
-        return true;
-    }
-
-    protected static function preparedQueryVars(array $fields): array
+    protected static function prepareQueryVars(array $fields): array
     {
         $keys = array_keys($fields);
         $placeholders = preg_filter('/^/', ':', $keys);
 
         return [
             'keys' => implode(', ', $keys),
-            'placeholders' =>  implode(', ', $placeholders)
+            'placeholders' => implode(', ', $placeholders),
         ];
+    }
+
+    private static function buildPlaceholders(array $data): string
+    {
+        $ps = [];
+
+        foreach ($data as $key => $value) {
+            $ps[] = " {$key}=:{$key}";
+        }
+
+        return implode(', ', $ps);
     }
 }
